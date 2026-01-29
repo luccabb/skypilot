@@ -15,6 +15,7 @@ from sky import sky_logging
 from sky.adaptors import slurm
 from sky.skylet import constants
 from sky.utils import annotations
+from sky.utils import command_runner
 from sky.utils import common_utils
 from sky.utils.db import kv_cache
 
@@ -61,6 +62,48 @@ def get_slurm_ssh_config() -> SSHConfig:
     return slurm_config
 
 
+def create_slurm_client_from_config(
+        ssh_config_dict: Dict[str, Any]) -> slurm.SlurmClient:
+    """Create a SlurmClient from an SSH config dictionary.
+
+    This handles the special case where hostname is localhost, allowing
+    keyless SSH connections for users already on the Slurm cluster.
+
+    Args:
+        ssh_config_dict: SSH config dictionary from SSHConfig.lookup().
+
+    Returns:
+        A configured SlurmClient instance.
+
+    Raises:
+        KeyError: If required config keys are missing (hostname, user, and
+            identityfile when not connecting to localhost).
+    """
+    hostname = ssh_config_dict['hostname']
+    # Check if we're connecting to localhost using the generic helper
+    is_local = command_runner.is_localhost(hostname)
+
+    # Get identity file, or None if missing and connecting to localhost
+    if 'identityfile' in ssh_config_dict:
+        ssh_key = ssh_config_dict['identityfile'][0]
+    elif is_local:
+        # For localhost connections, allow keyless SSH
+        ssh_key = None
+    else:
+        # Re-raise KeyError to maintain existing behavior
+        raise KeyError('identityfile')
+
+    return slurm.SlurmClient(
+        hostname,
+        int(ssh_config_dict.get('port', 22)),
+        ssh_config_dict['user'],
+        ssh_key,
+        ssh_proxy_command=ssh_config_dict.get('proxycommand', None),
+        ssh_proxy_jump=ssh_config_dict.get('proxyjump', None),
+        is_inside_slurm_cluster=is_local,
+    )
+
+
 @annotations.lru_cache(scope='request')
 def _get_slurm_nodes_info(cluster: str) -> List[slurm.NodeInfo]:
     cache_key = f'slurm:nodes_info:{cluster}'
@@ -71,14 +114,7 @@ def _get_slurm_nodes_info(cluster: str) -> List[slurm.NodeInfo]:
 
     ssh_config = get_slurm_ssh_config()
     ssh_config_dict = ssh_config.lookup(cluster)
-    client = slurm.SlurmClient(
-        ssh_config_dict['hostname'],
-        int(ssh_config_dict.get('port', 22)),
-        ssh_config_dict['user'],
-        ssh_config_dict['identityfile'][0],
-        ssh_proxy_command=ssh_config_dict.get('proxycommand', None),
-        ssh_proxy_jump=ssh_config_dict.get('proxyjump', None),
-    )
+    client = create_slurm_client_from_config(ssh_config_dict)
     nodes_info = client.info_nodes()
 
     try:
@@ -275,14 +311,7 @@ def get_cluster_default_partition(cluster_name: str) -> Optional[str]:
             f'Failed to load SSH configuration from {DEFAULT_SLURM_PATH}: '
             f'{common_utils.format_exception(e)}') from e
 
-    client = slurm.SlurmClient(
-        ssh_config_dict['hostname'],
-        int(ssh_config_dict.get('port', 22)),
-        ssh_config_dict['user'],
-        ssh_config_dict['identityfile'][0],
-        ssh_proxy_command=ssh_config_dict.get('proxycommand', None),
-        ssh_proxy_jump=ssh_config_dict.get('proxyjump', None),
-    )
+    client = create_slurm_client_from_config(ssh_config_dict)
 
     return client.get_default_partition()
 
@@ -456,14 +485,7 @@ def get_gres_gpu_type(cluster: str, requested_gpu_type: str) -> str:
     try:
         ssh_config = get_slurm_ssh_config()
         ssh_config_dict = ssh_config.lookup(cluster)
-        client = slurm.SlurmClient(
-            ssh_config_dict['hostname'],
-            int(ssh_config_dict.get('port', 22)),
-            ssh_config_dict['user'],
-            ssh_config_dict['identityfile'][0],
-            ssh_proxy_command=ssh_config_dict.get('proxycommand', None),
-            ssh_proxy_jump=ssh_config_dict.get('proxyjump', None),
-        )
+        client = create_slurm_client_from_config(ssh_config_dict)
 
         nodes = client.info_nodes()
 
@@ -504,14 +526,7 @@ def _get_slurm_node_info_list(
         slurm_cluster_name = slurm_cluster_names[0]
     slurm_config_dict = slurm_config.lookup(slurm_cluster_name)
     logger.debug(f'Slurm config dict: {slurm_config_dict}')
-    slurm_client = slurm.SlurmClient(
-        slurm_config_dict['hostname'],
-        int(slurm_config_dict.get('port', 22)),
-        slurm_config_dict['user'],
-        slurm_config_dict['identityfile'][0],
-        ssh_proxy_command=slurm_config_dict.get('proxycommand', None),
-        ssh_proxy_jump=slurm_config_dict.get('proxyjump', None),
-    )
+    slurm_client = create_slurm_client_from_config(slurm_config_dict)
     node_infos = slurm_client.info_nodes()
 
     if not node_infos:
@@ -652,14 +667,7 @@ def get_partition_infos(cluster_name: str) -> Dict[str, slurm.SlurmPartition]:
             os.path.expanduser(DEFAULT_SLURM_PATH))
         slurm_config_dict = slurm_config.lookup(cluster_name)
 
-        client = slurm.SlurmClient(
-            slurm_config_dict['hostname'],
-            int(slurm_config_dict.get('port', 22)),
-            slurm_config_dict['user'],
-            slurm_config_dict['identityfile'][0],
-            ssh_proxy_command=slurm_config_dict.get('proxycommand', None),
-            ssh_proxy_jump=slurm_config_dict.get('proxyjump', None),
-        )
+        client = create_slurm_client_from_config(slurm_config_dict)
 
         partitions_info = client.get_partitions_info()
     except Exception as e:  # pylint: disable=broad-except

@@ -312,6 +312,21 @@ def ssh_options_list(
     ]
 
 
+def is_localhost(hostname: str) -> bool:
+    """Check if a hostname refers to the local machine.
+
+    This is useful for determining whether to use local execution instead
+    of SSH when the target host is the same machine we're running on.
+
+    Args:
+        hostname: The hostname to check.
+
+    Returns:
+        True if the hostname refers to localhost, False otherwise.
+    """
+    return hostname in ('localhost', '127.0.0.1')
+
+
 class SshMode(enum.Enum):
     """Enum for SSH mode."""
     # Do not allocating pseudo-tty to avoid user input corrupting outputs.

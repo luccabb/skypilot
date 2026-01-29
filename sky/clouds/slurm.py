@@ -11,6 +11,7 @@ from sky.adaptors import slurm
 from sky.provision.slurm import utils as slurm_utils
 from sky.skylet import constants
 from sky.utils import annotations
+from sky.utils import command_runner
 from sky.utils import common_utils
 from sky.utils import registry
 from sky.utils import resources_utils
@@ -364,6 +365,19 @@ class Slurm(clouds.Cloud):
 
         image_id = resources.extract_docker_image()
 
+        # Check if we're connecting to localhost using the generic helper
+        hostname = ssh_config_dict['hostname']
+        is_local = command_runner.is_localhost(hostname)
+
+        # Get identity file, or None if missing and connecting to localhost
+        if 'identityfile' in ssh_config_dict:
+            slurm_private_key = ssh_config_dict['identityfile'][0]
+        elif is_local:
+            # For localhost connections, allow keyless SSH
+            slurm_private_key = None
+        else:
+            raise KeyError('identityfile')
+
         deploy_vars = {
             'instance_type': resources.instance_type,
             'custom_resources': custom_resources,
@@ -374,14 +388,14 @@ class Slurm(clouds.Cloud):
             'slurm_cluster': cluster,
             'slurm_partition': partition,
             # TODO(jwj): Pass SSH config in a smarter way
-            'ssh_hostname': ssh_config_dict['hostname'],
+            'ssh_hostname': hostname,
             'ssh_port': str(ssh_config_dict.get('port', 22)),
             'ssh_user': ssh_config_dict['user'],
             'slurm_proxy_command': ssh_config_dict.get('proxycommand', None),
             'slurm_proxy_jump': ssh_config_dict.get('proxyjump', None),
             # TODO(jwj): Solve naming collision with 'ssh_private_key'.
             # Please refer to slurm-ray.yml.j2 'ssh' and 'auth' sections.
-            'slurm_private_key': ssh_config_dict['identityfile'][0],
+            'slurm_private_key': slurm_private_key,
             'slurm_sshd_host_key_filename':
                 (slurm_utils.SLURM_SSHD_HOST_KEY_FILENAME),
             'slurm_cluster_name_env_var':
@@ -504,13 +518,8 @@ class Slurm(clouds.Cloud):
             # Retrieve the config options for a given SlurmctldHost name alias.
             ssh_config_dict = ssh_config.lookup(cluster)
             try:
-                client = slurm.SlurmClient(
-                    ssh_config_dict['hostname'],
-                    int(ssh_config_dict.get('port', 22)),
-                    ssh_config_dict['user'],
-                    ssh_config_dict['identityfile'][0],
-                    ssh_proxy_command=ssh_config_dict.get('proxycommand', None),
-                    ssh_proxy_jump=ssh_config_dict.get('proxyjump', None))
+                client = slurm_utils.create_slurm_client_from_config(
+                    ssh_config_dict)
                 info = client.info()
                 logger.debug(f'Slurm cluster {cluster} sinfo: {info}')
                 ctx2text[cluster] = 'enabled'
